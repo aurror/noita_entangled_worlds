@@ -49,6 +49,7 @@ struct LocalDiffModelTracker {
     pending_localize: Vec<(Lid, PeerId)>,
     /// Stores pairs of entity killed and optionally the responsible entity.
     pending_death_notify: Vec<(EntityID, bool, WorldPos, String, Option<EntityID>)>,
+    pending_explode: Vec<Lid>,
     global_entities: FxHashSet<EntityID>,
     got_polied: FxHashSet<Gid>,
 }
@@ -344,6 +345,7 @@ impl Default for LocalDiffModel {
                 pending_authority: Vec::new(),
                 pending_localize: Vec::with_capacity(4),
                 pending_death_notify: Vec::with_capacity(4),
+                pending_explode: Vec::with_capacity(4),
                 global_entities: Default::default(),
                 got_polied: Default::default(),
             },
@@ -527,6 +529,11 @@ impl LocalDiffModelTracker {
             let hp = damage.hp()?;
             info.hp = hp as f32;
             info.max_hp = Some(damage.max_hp()? as f32);
+        }
+        if let Some(expl) = handle.try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None) {
+            if expl.m_done()? && !self.pending_explode.contains(&lid) {
+                self.pending_explode.push(lid);
+            }
         }
 
         if handle.check_all_phys_init()? {
@@ -750,6 +757,7 @@ impl LocalDiffModelTracker {
         lid: Lid,
         ent: Option<NonZero<isize>>,
     ) -> Result<(), eyre::Error> {
+        self.pending_explode.retain(|l| l != &lid);
         self.pending_removal.push(lid);
         ctx.net.send(&NoitaOutbound::DesToProxy(
             shared::des::DesToProxy::DeleteEntity(gid, ent),
@@ -1088,6 +1096,13 @@ impl LocalDiffModel {
                 gid,
             },
         );
+        if let Ok(mut handle) = entity_manager.handle(entity) {
+            if let Some(expl) = handle.try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None) {
+                if expl.m_done()? && !self.tracker.pending_explode.contains(&lid) {
+                    self.tracker.pending_explode.push(lid);
+                }
+            }
+        }
 
         Ok(lid)
     }
@@ -1303,10 +1318,13 @@ impl LocalDiffModel {
             let Some((lid, _)) = self.tracker.tracked.remove_by_right(&killed) else {
                 continue;
             };
+            self.tracker.pending_explode.retain(|l| l != &lid);
             let drops_gold = if let Some(info) = self.entity_entries.remove(&lid) {
                 to_untrack.push((info.gid, lid));
+                self.tracker.pending_explode.retain(|l| l != &lid);
                 info.current.unwrap().drops_gold
             } else {
+                self.tracker.pending_explode.retain(|l| l != &lid);
                 false
             };
             self.update_buffer.push(EntityUpdate::KillEntity {
@@ -1318,6 +1336,7 @@ impl LocalDiffModel {
             self.tracker.global_entities.remove(&killed);
             self.upload.remove(&lid);
             self.dont_save.remove(&lid);
+            self.tracker.pending_explode.retain(|l| l != &lid);
             entity_manager.remove_ent(&killed);
         }
         // Every one of these has already been pulled out of tracked and
@@ -1386,6 +1405,15 @@ impl LocalDiffModel {
                         });
                         continue;
                     };
+                    if let Some(ent) = self.tracker.tracked.get_by_left(&lid) {
+                        if let Ok(mut handle) = entity_manager.handle(*ent) {
+                            if let Some(expl) = handle.try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None) {
+                                if expl.m_done()? && !self.tracker.pending_explode.contains(&lid) {
+                                    self.tracker.pending_explode.push(lid);
+                                }
+                            }
+                        }
+                    }
                     let Some(current) = current else {
                         unreachable!()
                     };
@@ -1581,6 +1609,10 @@ impl LocalDiffModel {
             self.update_buffer
                 .push(EntityUpdate::LocalizeEntity(lid, peer));
         }
+        for lid in self.tracker.pending_explode.drain(..) {
+            self.update_buffer.push(EntityUpdate::CurrentEntity(lid));
+            self.update_buffer.push(EntityUpdate::ForceExplode(lid));
+        }
 
         for lid in self.tracker.pending_removal.drain(..) {
             self.update_buffer.push(EntityUpdate::RemoveEntity(lid));
@@ -1589,6 +1621,7 @@ impl LocalDiffModel {
             self.entity_entries.remove(&lid);
             self.upload.remove(&lid);
             self.dont_save.remove(&lid);
+            self.tracker.pending_explode.retain(|l| l != &lid);
             if let Some((_, ent)) = ent {
                 entity_manager.remove_ent(&ent);
             }
@@ -1640,6 +1673,7 @@ impl LocalDiffModel {
                 safe_entitykill(entity_manager.handle(entity)?);
                 // "Untrack" entity
                 self.tracker.tracked.remove_by_left(&lid);
+                self.tracker.pending_explode.retain(|l| l != &lid);
                 if let Some(gid) = self.entity_entries.remove(&lid).map(|e| e.gid) {
                     let _ = net.send(&NoitaOutbound::DesToProxy(
                         shared::des::DesToProxy::DeleteEntity(gid, None),
@@ -1732,6 +1766,7 @@ impl RemoteDiffModel {
     ) -> eyre::Result<()> {
         let empty_data = &mut EntityInfo::default();
         let mut ent_data = &mut EntityInfo::default();
+        let mut to_explode: Vec<Lid> = Vec::new();
         for entry in diff {
             match entry {
                 EntityUpdate::CurrentEntity(lid) => {
@@ -1776,8 +1811,44 @@ impl RemoteDiffModel {
                 EntityUpdate::SetSyncedVar(vars) => ent_data.synced_var = vars,
                 EntityUpdate::SetIsEnabled(enabled) => ent_data.is_enabled = enabled,
                 EntityUpdate::SetCounter(orbs) => ent_data.counter = orbs,
+                EntityUpdate::ForceExplode(lid) => to_explode.push(lid),
             }
         }
+        for lid in to_explode.drain(..) {
+            let _ = self.force_explode(lid, entity_manager);
+        }
+        Ok(())
+    }
+
+    fn force_explode(
+        &self,
+        lid: Lid,
+        entity_manager: &mut EntityManager,
+    ) -> eyre::Result<()> {
+        let Some(entity) = self.tracked.get_by_left(&lid).copied() else {
+            return Ok(());
+        };
+        if !entity.is_alive() {
+            return Ok(());
+        }
+        let mut handle = entity_manager.handle(entity)?;
+        let Some(explosion) = handle.try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None) else {
+            return Ok(());
+        };
+        explosion.set_explode_on_damage_percent(1.0)?;
+        if let Some(damage) = handle.try_get_first_component_including_disabled::<DamageModelComponent>(ComponentTag::None) {
+            let old = damage.object_get_value::<f64>("damage_multipliers", "curse")?;
+            if old != 1.0 {
+                damage.object_set_value("damage_multipliers", "curse", 1.0)?;
+            }
+            entity.inflict_damage(0.001, DamageType::DamageCurse, "explode sync", None)?;
+            if old != 0.0 {
+                damage.object_set_value("damage_multipliers", "curse", old)?;
+            }
+        } else {
+            entity.inflict_damage(0.001, DamageType::DamageCurse, "explode sync", None)?;
+        }
+        explosion.set_explode_on_damage_percent(0.0)?;
         Ok(())
     }
 

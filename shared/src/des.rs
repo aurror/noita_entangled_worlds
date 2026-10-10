@@ -203,6 +203,7 @@ pub enum EntityUpdate {
     // this list, so inserting one anywhere else renumbers every variant after
     // it and a peer on an older build silently applies the wrong update.
     SetMaxHp(Option<f32>),
+    ForceExplode(Lid),
 }
 
 #[derive(Debug, Encode, Decode, Clone)]

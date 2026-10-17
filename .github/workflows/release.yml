@@ -146,9 +146,13 @@ jobs:
       - name: Determine release tag
         id: version
         run: |
-          version=$(python3 -c "import tomllib; print(tomllib.load(open('noita_proxy/Cargo.toml','rb'))['package']['version'])")
+          version=$(grep -m1 '^version' noita_proxy/Cargo.toml | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+          if [ -z "$version" ]; then
+            echo "Could not determine proxy version from noita_proxy/Cargo.toml" >&2
+            exit 1
+          fi
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "Releasing as $version"
+          echo "Releasing as v$version"
       - name: Delete all older releases to save space
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

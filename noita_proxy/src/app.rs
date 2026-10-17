@@ -213,7 +213,12 @@ impl App {
             .as_ref()
             .map(|steam| steam.client.utils().is_steam_running_on_steam_deck())
             .unwrap_or(false);
-        let default_zoom_factor = if running_on_steamdeck { 0.3 } else { 1.0 };
+        // NB: keep the UI at normal scale everywhere, including the Steam
+        // Deck. A reduced zoom factor used to make everything tiny and
+        // unreadable at 1280x800; the connect screen layout is responsive
+        // instead, so it fills the window at normal scale. Users can still
+        // override the scale with --ui-zoom-factor.
+        let default_zoom_factor = 1.0;
         if running_on_steamdeck {
             cc.egui_ctx
                 .send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(10.0, 10.0)));
@@ -492,13 +497,27 @@ impl App {
             let group_shrink = ui.spacing().item_spacing.x * 0.5;
             let rect = ui.max_rect();
             let (rect, bottom_panel) =
-                rect.split_top_bottom_at_y(rect.height() - (25.0 + group_shrink * 2.0));
+                rect.split_top_bottom_at_y(rect.height() - (30.0 + group_shrink * 2.0));
 
-            let (rect, right_b_panel) =
-                rect.split_left_right_at_x(rect.width() - (50.0 + group_shrink * 2.0));
-            let (settings_rect, right) = rect.split_left_right_at_fraction(0.5);
-            let (steam_connect_rect, other_rect) = right.split_top_bottom_at_fraction(0.33);
-            let (ip_connect_rect, info_rect) = other_rect.split_top_bottom_at_fraction(0.5);
+            // Narrow windows (e.g. small desktop windows, portrait handhelds)
+            // stack the panels vertically in a scrollable list instead of
+            // squeezing them into unreadable columns. At normal UI scale the
+            // side-by-side layout needs about this much width to stay
+            // readable (Steam Deck landscape at 1280x800 is wide enough).
+            let wide = rect.width() >= 850.0;
+            let (rect, right_b_panel) = if wide {
+                rect.split_left_right_at_x(rect.width() - (56.0 + group_shrink * 2.0))
+            } else {
+                // No icon strip in narrow mode; those buttons join the flow.
+                (rect, Rect::NOTHING)
+            };
+            let (settings_rect, steam_connect_rect, ip_connect_rect) = if wide {
+                let (settings_rect, right) = rect.split_left_right_at_fraction(0.5);
+                let (steam_connect_rect, ip_connect_rect) = right.split_top_bottom_at_fraction(0.5);
+                (settings_rect, steam_connect_rect, ip_connect_rect)
+            } else {
+                (Rect::NOTHING, Rect::NOTHING, Rect::NOTHING)
+            };
 
             ui.allocate_new_ui(
                 UiBuilder {
@@ -517,89 +536,88 @@ impl App {
                 },
             );
 
-            ui.allocate_new_ui(
-                UiBuilder {
-                    max_rect: Some(info_rect.shrink(group_shrink)),
-                    ..Default::default()
-                },
-                |ui| {
-                    filled_group(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-                        // heading_with_underline(ui, tr("Info"));
-                        // ui.label(tr("info_stress_tests"));
-                    });
-                },
-            );
+            if wide {
+                ui.allocate_new_ui(
+                    UiBuilder {
+                        max_rect: Some(right_b_panel.shrink(group_shrink)),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        filled_group(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
 
-            ui.allocate_new_ui(
-                UiBuilder {
-                    max_rect: Some(right_b_panel.shrink(group_shrink)),
-                    ..Default::default()
-                },
-                |ui| {
-                    filled_group(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
+                            self.panel_right_bar(ui, ctx);
+                        })
+                    },
+                );
 
-                        self.panel_right_bar(ui, ctx);
-                    })
-                },
-            );
-
-            ui.allocate_new_ui(
-                UiBuilder {
-                    max_rect: Some(settings_rect.shrink(group_shrink)),
-                    ..Default::default()
-                },
-                |ui| {
-                    filled_group(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-                        ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                            self.show_local_settings(ui);
-                            if ui.button("Show host settings").clicked() {
-                                self.show_host_settings = !self.show_host_settings
-                            }
-                            if self.show_host_settings {
-                                self.app_saved_state.game_settings.show_editor(ui, true)
-                            }
-                            if ui.button("Show audio settings").clicked() {
-                                self.show_audio_settings = !self.show_audio_settings
-                            }
-                            if self.show_audio_settings {
-                                self.audio.show_ui(ui, true);
-                            }
-                            if self.running_on_steamdeck && ui.button("Close Proxy").clicked() {
-                                exit(0)
-                            }
+                ui.allocate_new_ui(
+                    UiBuilder {
+                        max_rect: Some(settings_rect.shrink(group_shrink)),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        filled_group(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
+                            ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                                self.show_local_settings(ui);
+                                self.show_extra_settings(ui);
+                            });
                         });
-                    });
-                },
-            );
-            ui.allocate_new_ui(
-                UiBuilder {
-                    max_rect: Some(steam_connect_rect.shrink(group_shrink)),
-                    ..Default::default()
-                },
-                |ui| {
-                    filled_group(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
+                    },
+                );
+                ui.allocate_new_ui(
+                    UiBuilder {
+                        max_rect: Some(steam_connect_rect.shrink(group_shrink)),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        filled_group(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
 
+                            self.panel_connect_by_steam(ui);
+                        });
+                    },
+                );
+                ui.allocate_new_ui(
+                    UiBuilder {
+                        max_rect: Some(ip_connect_rect.shrink(group_shrink)),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        filled_group(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
+
+                            self.panel_connect_by_ip(ui);
+                        });
+                    },
+                );
+            } else {
+                // Narrow mode: stack everything vertically in a scrollable
+                // list so it stays readable in small windows.
+                ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    filled_group(ui, |ui| {
+                        ui.set_width(ui.available_width());
                         self.panel_connect_by_steam(ui);
                     });
-                },
-            );
-            ui.allocate_new_ui(
-                UiBuilder {
-                    max_rect: Some(ip_connect_rect.shrink(group_shrink)),
-                    ..Default::default()
-                },
-                |ui| {
+                    ui.add_space(group_shrink);
                     filled_group(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-
+                        ui.set_width(ui.available_width());
                         self.panel_connect_by_ip(ui);
                     });
-                },
-            );
+                    ui.add_space(group_shrink);
+                    filled_group(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.show_local_settings(ui);
+                        self.show_extra_settings(ui);
+                    });
+                    ui.add_space(group_shrink);
+                    filled_group(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        self.panel_right_bar(ui, ctx);
+                    });
+                });
+            }
         });
 
         if self.show_lobby_list {
@@ -726,6 +744,24 @@ impl App {
         }
     }
 
+    fn show_extra_settings(&mut self, ui: &mut Ui) {
+        if ui.button("Show host settings").clicked() {
+            self.show_host_settings = !self.show_host_settings
+        }
+        if self.show_host_settings {
+            self.app_saved_state.game_settings.show_editor(ui, true)
+        }
+        if ui.button("Show audio settings").clicked() {
+            self.show_audio_settings = !self.show_audio_settings
+        }
+        if self.show_audio_settings {
+            self.audio.show_ui(ui, true);
+        }
+        if self.running_on_steamdeck && ui.button("Close Proxy").clicked() {
+            exit(0)
+        }
+    }
+
     fn panel_connect_by_steam(&mut self, ui: &mut Ui) {
         heading_with_underline(ui, tr("connect_steam"));
 
@@ -758,14 +794,26 @@ impl App {
                     self.show_lobby_list = true;
                 }
 
-                if cfg!(target_os = "linux") {
-                    ui.add_space(15.0);
-                    ui.label(tr("connect_steam_workaround_label"));
-                    ui.text_edit_singleline(&mut self.lobby_id_field);
-                    if ui.button(tr("connect_steam_connect_2")).clicked() {
-                        self.set_settings();
-                        self.connect_to_steam_lobby(self.lobby_id_field.clone());
-                    }
+                ui.separator();
+                // Manual lobby code entry. Always visible (not just a
+                // Linux/Wayland workaround): on the Steam Deck there is often
+                // nothing useful in the clipboard, so typing/pasting the code
+                // into this field is the primary way to join a friend.
+                ui.label(tr("connect_steam_id_label"));
+                let field = ui.text_edit_singleline(&mut self.lobby_id_field);
+                let connect_from_field = ui
+                    .add_enabled(
+                        !self.lobby_id_field.trim().is_empty(),
+                        Button::new(tr("connect_steam_connect_2")),
+                    )
+                    .clicked()
+                    // Enter while editing the field connects too.
+                    || (field.lost_focus()
+                        && ui.input(|i| i.key_pressed(Key::Enter))
+                        && !self.lobby_id_field.trim().is_empty());
+                if connect_from_field {
+                    self.set_settings();
+                    self.connect_to_steam_lobby(self.lobby_id_field.clone());
                 }
             }
             Err(err) => {
@@ -1061,16 +1109,25 @@ impl App {
                 ConnectedMenu::Normal => {
                     if netman.peer.is_steam() {
                         if let Some(id) = netman.peer.lobby_id() {
-                            if ui.button(tr("netman_save_lobby")).clicked() || !self.copied_lobby {
-                                let lobby_code = LobbyCode {
-                                    kind: self.my_lobby_kind,
-                                    code: id,
-                                };
-                                if let Some(clipboard) = self.clipboard.as_mut() {
-                                    let _ = clipboard.set_text(lobby_code.serialize());
-                                }
-                                self.copied_lobby = true;
+                            let lobby_code = LobbyCode {
+                                kind: self.my_lobby_kind,
+                                code: id,
                             }
+                            .serialize();
+                            ui.horizontal(|ui| {
+                                if ui.button(tr("netman_save_lobby")).clicked()
+                                    || !self.copied_lobby
+                                {
+                                    if let Some(clipboard) = self.clipboard.as_mut() {
+                                        let _ = clipboard.set_text(&lobby_code);
+                                    }
+                                    self.copied_lobby = true;
+                                }
+                                // Show the code as readable, selectable text
+                                // too (useful where the clipboard is
+                                // unavailable, e.g. on the Steam Deck).
+                                ui.add(egui::SelectableLabel::new(false, &lobby_code));
+                            });
                         } else {
                             ui.label("No lobby created yet");
                         }

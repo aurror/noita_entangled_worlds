@@ -530,10 +530,12 @@ impl LocalDiffModelTracker {
             info.hp = hp as f32;
             info.max_hp = Some(damage.max_hp()? as f32);
         }
-        if let Some(expl) = handle.try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None) {
-            if expl.m_done()? && !self.pending_explode.contains(&lid) {
-                self.pending_explode.push(lid);
-            }
+        if let Some(expl) = handle
+            .try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None)
+            && expl.m_done()?
+            && !self.pending_explode.contains(&lid)
+        {
+            self.pending_explode.push(lid);
         }
 
         if handle.check_all_phys_init()? {
@@ -1096,12 +1098,13 @@ impl LocalDiffModel {
                 gid,
             },
         );
-        if let Ok(mut handle) = entity_manager.handle(entity) {
-            if let Some(expl) = handle.try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None) {
-                if expl.m_done()? && !self.tracker.pending_explode.contains(&lid) {
-                    self.tracker.pending_explode.push(lid);
-                }
-            }
+        if let Ok(handle) = entity_manager.handle(entity)
+            && let Some(expl) = handle
+                .try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None)
+            && expl.m_done()?
+            && !self.tracker.pending_explode.contains(&lid)
+        {
+            self.tracker.pending_explode.push(lid);
         }
 
         Ok(lid)
@@ -1405,14 +1408,16 @@ impl LocalDiffModel {
                         });
                         continue;
                     };
-                    if let Some(ent) = self.tracker.tracked.get_by_left(&lid) {
-                        if let Ok(mut handle) = entity_manager.handle(*ent) {
-                            if let Some(expl) = handle.try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None) {
-                                if expl.m_done()? && !self.tracker.pending_explode.contains(&lid) {
-                                    self.tracker.pending_explode.push(lid);
-                                }
-                            }
-                        }
+                    if let Some(ent) = self.tracker.tracked.get_by_left(&lid)
+                        && let Ok(handle) = entity_manager.handle(*ent)
+                        && let Some(expl) = handle
+                            .try_get_first_component::<noita_api::ExplodeOnDamageComponent>(
+                                ComponentTag::None,
+                            )
+                        && expl.m_done()?
+                        && !self.tracker.pending_explode.contains(&lid)
+                    {
+                        self.tracker.pending_explode.push(lid);
                     }
                     let Some(current) = current else {
                         unreachable!()
@@ -1820,23 +1825,23 @@ impl RemoteDiffModel {
         Ok(())
     }
 
-    fn force_explode(
-        &self,
-        lid: Lid,
-        entity_manager: &mut EntityManager,
-    ) -> eyre::Result<()> {
+    fn force_explode(&self, lid: Lid, entity_manager: &mut EntityManager) -> eyre::Result<()> {
         let Some(entity) = self.tracked.get_by_left(&lid).copied() else {
             return Ok(());
         };
         if !entity.is_alive() {
             return Ok(());
         }
-        let mut handle = entity_manager.handle(entity)?;
-        let Some(explosion) = handle.try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None) else {
+        let handle = entity_manager.handle(entity)?;
+        let Some(explosion) = handle
+            .try_get_first_component::<noita_api::ExplodeOnDamageComponent>(ComponentTag::None)
+        else {
             return Ok(());
         };
         explosion.set_explode_on_damage_percent(1.0)?;
-        if let Some(damage) = handle.try_get_first_component_including_disabled::<DamageModelComponent>(ComponentTag::None) {
+        if let Some(damage) = handle
+            .try_get_first_component_including_disabled::<DamageModelComponent>(ComponentTag::None)
+        {
             let old = damage.object_get_value::<f64>("damage_multipliers", "curse")?;
             if old != 1.0 {
                 damage.object_set_value("damage_multipliers", "curse", 1.0)?;

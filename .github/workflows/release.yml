@@ -1,6 +1,12 @@
 name: release
 
-on: [push, pull_request]
+on:
+  # Build on every branch/tag push and on pull requests so feature branches
+  # (e.g. changes to be sent upstream as PRs) get built too. Only master and
+  # version tags publish a release; feature branches just produce artifacts.
+  push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   build-mod:
@@ -120,7 +126,12 @@ jobs:
 
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Publish automatically on pushes to the default branch (master) with the
+    # version from noita_proxy/Cargo.toml, and on explicit v* tags. Feature
+    # branches and pull requests only build, they never publish a release.
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -129,13 +140,39 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: last_release_notes.md
+          sparse-checkout: |
+            last_release_notes.md
+            noita_proxy/Cargo.toml
+      - name: Determine release tag
+        id: version
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('noita_proxy/Cargo.toml','rb'))['package']['version'])")
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing as $version"
+      - name: Delete all older releases to save space
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEEP_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Only the newest release is kept. Releases are keyed by the proxy
+          # version, so when the version is bumped the previous release (and
+          # its tag) is removed here before publishing the new one.
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | while read -r tag; do
+            if [ -n "$tag" ] && [ "$tag" != "$KEEP_TAG" ]; then
+              echo "Deleting old release $tag"
+              gh release delete "$tag" --yes --cleanup-tag || true
+            fi
+          done
       - name: Download all workflow run artifacts
         uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-      - uses: ncipollo/release-action@v1
+      - uses: softprops/action-gh-release@v2
         with:
-          #draft: true
-          artifacts: "*.zip"
-          bodyFile: last_release_notes.md
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          body_path: last_release_notes.md
+          files: "*.zip"
+          make_latest: true
+          fail_on_unmatched_files: true

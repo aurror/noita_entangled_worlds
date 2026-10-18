@@ -140,9 +140,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: |
-            last_release_notes.md
-            noita_proxy/Cargo.toml
+          # Full history is needed to build the changelog below.
+          fetch-depth: 0
       - name: Determine release tag
         id: version
         run: |
@@ -153,6 +152,74 @@ jobs:
           fi
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "Releasing as v$version"
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Base the notes on the last published build, so the summary
+          # describes what actually changed since then (either the previous
+          # version, or the previous build of the same version). Only the
+          # newest release is kept, so the latest release is always that base.
+          prev_sha=$(gh release view --json targetCommitish --jq .targetCommitish 2>/dev/null || true)
+          if [ -n "$prev_sha" ] && ! git cat-file -e "${prev_sha}^{commit}" 2>/dev/null; then
+            prev_sha=""
+          fi
+          if [ -n "$prev_sha" ]; then
+            range="$prev_sha..HEAD"
+          else
+            range="HEAD"
+          fi
+
+          # Commit subjects grouped by their author so the people who did the
+          # work are credited. Merge commits and automated version bumps are
+          # left out.
+          commits=$(git log --no-merges --reverse \
+            --invert-grep --grep='^Automated commit' \
+            --pretty=format:'%an%x09%s%x09%h' "$range")
+
+          if [ -z "$commits" ]; then
+            echo "Maintenance build, no user-facing changes since the previous release." > release_notes.md
+          else
+            {
+              echo "## What's Changed"
+              echo
+              echo "$commits" | awk -F'\t' -v repo="$REPO" '
+                {
+                  author=$1; subject=$2; sha=$3
+                  if (author != current) {
+                    if (current != "") print ""
+                    printf "### %s\n", author
+                    current=author
+                  }
+                  printf "- %s ([%s](https://github.com/%s/commit/%s))\n", subject, sha, repo, sha
+                }'
+              echo
+              if [ -n "$prev_sha" ]; then
+                echo "**Full Changelog**: https://github.com/$REPO/compare/$prev_sha...$GITHUB_SHA"
+                echo
+              fi
+            } > release_notes.md
+          fi
+
+          cat >> release_notes.md <<'NOTES'
+          ## Installation
+
+          Download and unpack `noita_proxy-win.zip` or `noita_proxy-linux.zip`, depending on your OS. After that, launch the proxy.
+
+          Proxy is able to download and install the mod automatically. There is no need to download the mod (`quant.ew.zip`) manually.
+
+          You'll be prompted for a path to `noita.exe` when launching the proxy for the first time. It should be detected automatically as long as you use steam version of the game and steam is launched.
+
+          ## Updating
+
+          There is a button in bottom-left corner on noita_proxy's main screen that allows to auto-update to a new version when one is available.
+          NOTES
+
+          echo "----- release notes -----"
+          cat release_notes.md
       - name: Delete all older releases to save space
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -176,7 +243,7 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          body_path: last_release_notes.md
+          body_path: release_notes.md
           files: "*.zip"
           make_latest: true
           fail_on_unmatched_files: true

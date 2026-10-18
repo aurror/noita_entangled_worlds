@@ -15,6 +15,11 @@ use serde::Deserialize;
 
 pub type ReleasesError = eyre::Report;
 
+/// GitHub repository the proxy fetches mod assets and updates from.
+/// This build is published under this fork, so point it here instead of the
+/// upstream repository.
+const RELEASES_REPO: &str = "aurror/noita_entangled_worlds";
+
 #[derive(Debug, Deserialize)]
 pub struct Release {
     pub tag_name: Tag,
@@ -206,7 +211,9 @@ impl Release {
 
 pub fn get_latest_release(client: &Client) -> Result<Release, ReleasesError> {
     let response = client
-        .get("https://api.github.com/repos/IntQuant/noita_entangled_worlds/releases/latest")
+        .get(format!(
+            "https://api.github.com/repos/{RELEASES_REPO}/releases/latest"
+        ))
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
         .header("User-agent", "noita proxy")
@@ -218,7 +225,7 @@ pub fn get_latest_release(client: &Client) -> Result<Release, ReleasesError> {
 
 pub fn get_release_by_tag(client: &Client, tag: Tag) -> Result<Release, ReleasesError> {
     let url = format!(
-        "https://api.github.com/repos/IntQuant/noita_entangled_worlds/releases/tags/{}",
+        "https://api.github.com/repos/{RELEASES_REPO}/releases/tags/{}",
         tag.0
     );
     let response = client

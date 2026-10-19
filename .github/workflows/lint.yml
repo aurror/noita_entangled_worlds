@@ -34,3 +34,35 @@ jobs:
       - name: Run tests (proxy)
         run: cargo test -p noita_proxy
         working-directory: ./noita_proxy
+
+  lua-parse:
+    runs-on: ubuntu-22.04
+    name: Parse Lua (LuaJIT 2.0.4)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build LuaJIT 2.0.4
+        run: |
+          git init -q "$RUNNER_TEMP/luajit"
+          cd "$RUNNER_TEMP/luajit"
+          git fetch -q --depth 1 https://github.com/LuaJIT/LuaJIT.git 69e5342eb893815b18a1ec84ba74b0e0d1cc9beb
+          git checkout -q FETCH_HEAD
+          make -j"$(nproc)"
+          src/luajit -v
+      - name: Parse quant.ew Lua
+        env:
+          LUAJIT: ${{ runner.temp }}/luajit/src/luajit
+        run: |
+          git ls-files -z -c -o --exclude-standard -- quant.ew | "$LUAJIT" -e '
+            local n, bad = 0, 0
+            for p in io.read("*a"):gmatch("%Z+") do
+              if p:lower():sub(-4) == ".lua" then
+                n = n + 1
+                local f = assert(io.open(p, "rb"))
+                local s = f:read("*a")
+                f:close()
+                local ok, err = loadstring(s, "@" .. p)
+                if not ok then bad = bad + 1; print(err) end
+              end
+            end
+            print(string.format("lua parse: %d files, %d errors", n, bad))
+            if n == 0 or bad > 0 then os.exit(1) end'

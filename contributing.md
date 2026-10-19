@@ -13,7 +13,7 @@ You also might need to add steam dynamic library. The easiest way to get one is 
 Address 127.0.0.1:21251 is used to communicate between proxy and local Noita instance by default.
 However, because generally ports can't be used by several apps at once, only one proxy instance can use the default address:port pair.
 
-This address can be changed using enviromental variable NP_NOITA_ADDR. Example (on linux):
+This address can be changed using environmental variable NP_NOITA_ADDR. Example (on linux):
 ```bash
 NP_DISABLE_STEAM=1 NP_NOITA_ADDR=127.0.0.1:21252 cargo run --release # To start the proxy
 NP_NOITA_ADDR=127.0.0.1:21252 wine noita.exe # To start Noita

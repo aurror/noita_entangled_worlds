@@ -38,3 +38,14 @@ local uses_persistent_flags = {
 for _, file in ipairs(uses_persistent_flags) do
     ModLuaFileAppend(file, "mods/quant.ew/files/system/flag_sync/append/has_flag_hook.lua")
 end
+
+-- Shift the upper row of two-row Holy Mountain shops sideways so that, if it
+-- collapses and falls, its items don't land exactly on top of the lower row.
+ModLuaFileAppend(
+    "data/scripts/biomes/temple_altar.lua",
+    "mods/quant.ew/files/resource/append/shop_second_row_offset.lua"
+)
+ModLuaFileAppend(
+    "data/scripts/biomes/boss_arena.lua",
+    "mods/quant.ew/files/resource/append/shop_second_row_offset.lua"
+)
